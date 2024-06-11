@@ -21,9 +21,11 @@ package org.apache.tsfile.encoding.decoder;
 
 import org.apache.tsfile.common.conf.TSFileConfig;
 import org.apache.tsfile.common.conf.TSFileDescriptor;
+import org.apache.tsfile.enums.TSDataType;
 import org.apache.tsfile.exception.encoding.TsFileDecodingException;
 import org.apache.tsfile.file.metadata.enums.TSEncoding;
 import org.apache.tsfile.utils.Binary;
+import org.apache.tsfile.utils.RLEPattern;
 import org.apache.tsfile.utils.ReadWriteForEncodingUtils;
 import org.apache.tsfile.utils.ReadWriteIOUtils;
 
@@ -221,6 +223,11 @@ public abstract class RleDecoder extends Decoder {
   @Override
   public BigDecimal readBigDecimal(ByteBuffer buffer) {
     throw new TsFileDecodingException("Method readBigDecimal is not supproted by RleDecoder");
+  }
+
+  @Override
+  public RLEPattern readRLEPattern(ByteBuffer buffer, TSDataType dataType) {
+    throw new TsFileDecodingException("Method readRLEPattern is not supproted by RleDecoder");
   }
 
   protected enum Mode {

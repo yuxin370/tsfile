@@ -19,6 +19,7 @@
 
 package org.apache.tsfile.read.filter.operator;
 
+import org.apache.tsfile.block.column.Column;
 import org.apache.tsfile.file.metadata.IMetadata;
 import org.apache.tsfile.read.common.TimeRange;
 import org.apache.tsfile.read.common.block.TsBlock;
@@ -63,6 +64,29 @@ public class Not extends Filter {
     boolean[] result = filter.satisfyTsBlock(tsBlock);
     for (int i = 0; i < result.length; i++) {
       result[i] = !result[i];
+    }
+    return result;
+  }
+
+  @Override
+  public boolean[] satisfyColumn(long[] timestamps, Column values, int logicPositionCount) {
+    boolean[] result = filter.satisfyColumn(timestamps, values, logicPositionCount);
+    for (int i = 0; i < result.length; i++) {
+      result[i] = !result[i];
+    }
+    return result;
+  }
+
+  @Override
+  public boolean[] satisfyColumn(
+      long[] timestamps, boolean[] bitMap, Column values, int logicPositionCount) {
+    boolean[] result = filter.satisfyColumn(timestamps, bitMap, values, logicPositionCount);
+    for (int i = 0; i < result.length; i++) {
+      if (bitMap[i]) {
+        result[i] = false;
+      } else {
+        result[i] = !result[i];
+      }
     }
     return result;
   }

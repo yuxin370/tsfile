@@ -19,8 +19,13 @@
 
 package org.apache.tsfile.read.reader.page;
 
+import org.apache.tsfile.block.column.Column;
 import org.apache.tsfile.block.column.ColumnBuilder;
+import org.apache.tsfile.compress.IUnCompressor;
 import org.apache.tsfile.encoding.decoder.Decoder;
+import org.apache.tsfile.encoding.decoder.DictionaryDecoder;
+import org.apache.tsfile.encoding.decoder.FloatDecoder;
+import org.apache.tsfile.encoding.decoder.RleDecoder;
 import org.apache.tsfile.enums.TSDataType;
 import org.apache.tsfile.file.header.PageHeader;
 import org.apache.tsfile.file.metadata.statistics.Statistics;
@@ -29,12 +34,14 @@ import org.apache.tsfile.read.common.BatchDataFactory;
 import org.apache.tsfile.read.common.TimeRange;
 import org.apache.tsfile.read.common.block.TsBlock;
 import org.apache.tsfile.read.common.block.TsBlockBuilder;
+import org.apache.tsfile.read.common.block.column.RLEColumnBuilder;
 import org.apache.tsfile.read.common.block.column.TimeColumnBuilder;
 import org.apache.tsfile.read.filter.basic.Filter;
 import org.apache.tsfile.read.filter.factory.FilterFactory;
 import org.apache.tsfile.read.reader.IPageReader;
 import org.apache.tsfile.read.reader.series.PaginationController;
 import org.apache.tsfile.utils.Binary;
+import org.apache.tsfile.utils.RLEPattern;
 import org.apache.tsfile.utils.ReadWriteForEncodingUtils;
 import org.apache.tsfile.write.UnSupportedDataTypeException;
 
@@ -45,6 +52,8 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
 
+import static org.apache.tsfile.read.common.block.TsBlockUtil.contructColumnBuilders;
+import static org.apache.tsfile.read.reader.chunk.ChunkReader.uncompressPageData;
 import static org.apache.tsfile.read.reader.series.PaginationController.UNLIMITED_PAGINATION_CONTROLLER;
 import static org.apache.tsfile.utils.Preconditions.checkArgument;
 
@@ -59,6 +68,12 @@ public class PageReader implements IPageReader {
 
   /** decoder for time column */
   private final Decoder timeDecoder;
+
+  /** Uncompressor for compressedDataBuffer */
+  private IUnCompressor unCompressor;
+
+  /** Uncompressed data in memory */
+  private ByteBuffer compressedDataBuffer;
 
   /** time column in memory */
   private ByteBuffer timeBuffer;
@@ -101,6 +116,23 @@ public class PageReader implements IPageReader {
     this.recordFilter = recordFilter;
     this.pageHeader = pageHeader;
     splitDataToTimeStampAndValue(pageData);
+  }
+
+  public PageReader(
+      PageHeader pageHeader,
+      ByteBuffer compressedPageData,
+      TSDataType dataType,
+      IUnCompressor unCompressor,
+      Decoder valueDecoder,
+      Decoder timeDecoder,
+      Filter recordFilter) {
+    this.dataType = dataType;
+    this.valueDecoder = valueDecoder;
+    this.timeDecoder = timeDecoder;
+    this.recordFilter = recordFilter;
+    this.pageHeader = pageHeader;
+    this.unCompressor = unCompressor;
+    this.compressedDataBuffer = compressedPageData;
   }
 
   /**
@@ -174,8 +206,118 @@ public class PageReader implements IPageReader {
     return pageData.flip();
   }
 
+  public TsBlock getAllSatisfiedDataToRLEColumn() throws IOException {
+    if (!(valueDecoder instanceof RleDecoder
+        || valueDecoder instanceof DictionaryDecoder
+        || (valueDecoder instanceof FloatDecoder
+            && ((FloatDecoder) valueDecoder).isRLEDecoder()))) {
+      throw new UnSupportedDataTypeException(
+          "only rle / dictionary encoder supported, get decoder type: " + valueDecoder.getType());
+    }
+    TsBlockBuilder builder;
+    int initialExpectedEntries = (int) pageHeader.getStatistics().getCount();
+    if (paginationController.hasCurLimit()) {
+      initialExpectedEntries =
+          (int) Math.min(initialExpectedEntries, paginationController.getCurLimit());
+    }
+    TimeColumnBuilder timeColumnBuilderTmp = new TimeColumnBuilder(null, initialExpectedEntries);
+    ColumnBuilder[] valueColumnBuilderTmp =
+        new ColumnBuilder[] {new RLEColumnBuilder(null, initialExpectedEntries, dataType)};
+    builder =
+        new TsBlockBuilder(
+            Collections.singletonList(dataType), timeColumnBuilderTmp, valueColumnBuilderTmp);
+
+    TimeColumnBuilder timeBuilder = builder.getTimeColumnBuilder();
+    RLEColumnBuilder valueBuilder = (RLEColumnBuilder) builder.getColumnBuilder(0);
+    boolean allSatisfy = recordFilter == null || recordFilter.allSatisfy(this);
+
+    while (timeDecoder.hasNext(timeBuffer)) {
+
+      /** read a RlePattern Pair<Column column, int logicalPositionCount> */
+      RLEPattern anRLEPattern = valueDecoder.readRLEPattern(valueBuffer, dataType);
+      int logicPositionCount = anRLEPattern.getLogicPositionCount();
+      Column valueColumn = anRLEPattern.getValue();
+      boolean isNotRLE = valueColumn.getPositionCount() > 1;
+
+      /** read coressponding timestamps and check if the timestamp is deleted. */
+      long[] timestamps = new long[logicPositionCount];
+      boolean[] isDeletedArray = new boolean[logicPositionCount];
+      int i = 0;
+      for (i = 0; i < logicPositionCount && timeDecoder.hasNext(timeBuffer); i++) {
+        timestamps[i] = timeDecoder.readLong(timeBuffer);
+        isDeletedArray[i] = isDeleted(timestamps[i]);
+      }
+
+      if (i < logicPositionCount) {
+        throw new RuntimeException("valueColumn and timeColumn have different length.");
+      }
+
+      /** construct value satisfy array with filter */
+      boolean[] valueSatisfy = new boolean[logicPositionCount];
+      if (allSatisfy) {
+        for (i = 0; i < logicPositionCount; i++) {
+          valueSatisfy[i] = !isDeletedArray[i];
+        }
+      } else {
+        valueSatisfy =
+            recordFilter.satisfyColumn(timestamps, isDeletedArray, valueColumn, logicPositionCount);
+      }
+
+      /** update valueSatisfyInfo further considering offset and limit */
+      boolean hasValueRetained = false;
+      boolean end = false;
+      ColumnBuilder valueColumnbuilder =
+          contructColumnBuilders(Collections.singletonList(dataType))[0];
+      int retainedLogicalPositionCount = 0;
+      for (i = 0; i < logicPositionCount; i++) {
+        if (!valueSatisfy[i]) {
+          continue;
+        }
+        if (paginationController.hasCurOffset()) {
+          paginationController.consumeOffset();
+          valueSatisfy[i] = false;
+          continue;
+        }
+        if (paginationController.hasCurLimit()) {
+          hasValueRetained = true;
+          timeBuilder.writeLong(timestamps[i]);
+          retainedLogicalPositionCount++;
+          if (isNotRLE) {
+            valueColumnbuilder.writeObject(valueColumn.getObject(i));
+          }
+          builder.declarePosition();
+          paginationController.consumeLimit();
+        } else {
+          end = true;
+          break;
+        }
+      }
+
+      /** write retained value to rleColumn */
+      if (hasValueRetained) {
+        if (!isNotRLE) {
+          valueColumnbuilder.writeObject(valueColumn.getObject(0));
+        }
+        valueBuilder.writeRLEPattern(valueColumnbuilder.build(), retainedLogicalPositionCount);
+      }
+
+      /** if read reach the end, break */
+      if (end) {
+        break;
+      }
+    }
+    return builder.build();
+  }
+
   @Override
   public TsBlock getAllSatisfiedData() throws IOException {
+    checkAndUncompressPageData();
+    /** only direct computing for rle encoder supported. */
+    if (valueDecoder instanceof RleDecoder
+        || valueDecoder instanceof DictionaryDecoder
+        || (valueDecoder instanceof FloatDecoder && ((FloatDecoder) valueDecoder).isRLEDecoder())) {
+      return getAllSatisfiedDataToRLEColumn();
+    }
     TsBlockBuilder builder;
     int initialExpectedEntries = (int) pageHeader.getStatistics().getCount();
     if (paginationController.hasLimit()) {
@@ -387,5 +529,13 @@ public class PageReader implements IPageReader {
       }
     }
     return false;
+  }
+
+  protected void checkAndUncompressPageData() throws IOException {
+    if (valueBuffer == null || timeBuffer == null) {
+      ByteBuffer PageData = uncompressPageData(pageHeader, unCompressor, compressedDataBuffer);
+      splitDataToTimeStampAndValue(PageData);
+      compressedDataBuffer = null;
+    }
   }
 }

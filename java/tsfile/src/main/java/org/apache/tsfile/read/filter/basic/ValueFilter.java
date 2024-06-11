@@ -24,12 +24,15 @@ import org.apache.tsfile.file.metadata.IMetadata;
 import org.apache.tsfile.file.metadata.statistics.Statistics;
 import org.apache.tsfile.read.common.TimeRange;
 import org.apache.tsfile.read.common.block.TsBlock;
+import org.apache.tsfile.read.common.block.column.RLEColumn;
+import org.apache.tsfile.utils.Pair;
 import org.apache.tsfile.utils.ReadWriteIOUtils;
 
 import java.io.DataOutputStream;
 import java.io.IOException;
 import java.io.Serializable;
 import java.nio.ByteBuffer;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
@@ -64,12 +67,82 @@ public abstract class ValueFilter extends Filter {
   public boolean[] satisfyTsBlock(TsBlock tsBlock) {
     Column valueColumn = tsBlock.getValueColumns()[measurementIndex];
     boolean[] satisfyInfo = new boolean[tsBlock.getPositionCount()];
-    for (int i = 0; i < tsBlock.getPositionCount(); i++) {
-      if (valueColumn.isNull(i)) {
-        // null not satisfy any filter, except IS NULL
-        satisfyInfo[i] = false;
+    if (valueColumn instanceof RLEColumn) {
+      Pair<Column[], int[]> patterns = ((RLEColumn) valueColumn).getVisibleColumns();
+      Column[] columns = patterns.getLeft();
+      int[] logicPositionCounts = patterns.getRight();
+      int index = 0;
+      for (int i = 0, len = columns.length; i < len; i++) {
+        if (columns[i].getPositionCount() == 1) {
+          boolean res = false;
+          if (!columns[i].isNull(0)) {
+            res = valueSatisfy(columns[i].getObject(0));
+          }
+          Arrays.fill(satisfyInfo, index, index + logicPositionCounts[i], res);
+          index += logicPositionCounts[i];
+        } else {
+          for (int j = 0; j < logicPositionCounts[i]; j++, index++) {
+            if (columns[i].isNull(j)) {
+              // null not satisfy any filter, except IS NULL
+              satisfyInfo[index] = false;
+            } else {
+              satisfyInfo[index] = valueSatisfy(columns[i].getObject(j));
+            }
+          }
+        }
+      }
+    } else {
+      for (int i = 0; i < tsBlock.getPositionCount(); i++) {
+        if (valueColumn.isNull(i)) {
+          // null not satisfy any filter, except IS NULL
+          satisfyInfo[i] = false;
+        } else {
+          satisfyInfo[i] = valueSatisfy(valueColumn.getObject(i));
+        }
+      }
+    }
+    return satisfyInfo;
+  }
+
+  @Override
+  public boolean[] satisfyColumn(long[] timestamps, Column values, int logicPositionCount) {
+    boolean[] satisfyInfo = new boolean[logicPositionCount];
+    if (values.getPositionCount() == 1) {
+      Arrays.fill(satisfyInfo, valueSatisfy(values.getObject(0)));
+    } else {
+      for (int i = 0; i < logicPositionCount; i++) {
+        if (values.isNull(i)) {
+          // null not satisfy any filter, except IS NULL
+          satisfyInfo[i] = false;
+        } else {
+          satisfyInfo[i] = valueSatisfy(values.getObject(i));
+        }
+      }
+    }
+    return satisfyInfo;
+  }
+
+  @Override
+  public boolean[] satisfyColumn(
+      long[] timestamps, boolean[] bitMap, Column values, int logicPositionCount) {
+    boolean[] satisfyInfo = new boolean[logicPositionCount];
+    if (values.getPositionCount() == 1) {
+      boolean res = valueSatisfy(values.getObject(0));
+      if (res == true) {
+        for (int i = 0; i < logicPositionCount; i++) {
+          satisfyInfo[i] = !bitMap[i];
+        }
       } else {
-        satisfyInfo[i] = valueSatisfy(valueColumn.getObject(i));
+        Arrays.fill(satisfyInfo, res);
+      }
+    } else {
+      for (int i = 0; i < logicPositionCount; i++) {
+        if (values.isNull(i) || bitMap[i]) {
+          // null not satisfy any filter, except IS NULL
+          satisfyInfo[i] = false;
+        } else {
+          satisfyInfo[i] = valueSatisfy(values.getObject(i));
+        }
       }
     }
     return satisfyInfo;

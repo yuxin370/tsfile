@@ -19,6 +19,7 @@
 
 package org.apache.tsfile.read.filter.operator;
 
+import org.apache.tsfile.block.column.Column;
 import org.apache.tsfile.file.metadata.IMetadata;
 import org.apache.tsfile.read.common.TimeRange;
 import org.apache.tsfile.read.common.block.TsBlock;
@@ -54,6 +55,27 @@ public class Or extends BinaryLogicalFilter {
   public boolean[] satisfyTsBlock(TsBlock tsBlock) {
     boolean[] leftResult = left.satisfyTsBlock(tsBlock);
     boolean[] rightResult = right.satisfyTsBlock(tsBlock);
+    for (int i = 0; i < leftResult.length; i++) {
+      leftResult[i] = leftResult[i] || rightResult[i];
+    }
+    return leftResult;
+  }
+
+  @Override
+  public boolean[] satisfyColumn(long[] timestamps, Column values, int logicPositionCount) {
+    boolean[] leftResult = left.satisfyColumn(timestamps, values, logicPositionCount);
+    boolean[] rightResult = right.satisfyColumn(timestamps, values, logicPositionCount);
+    for (int i = 0; i < leftResult.length; i++) {
+      leftResult[i] = leftResult[i] || rightResult[i];
+    }
+    return leftResult;
+  }
+
+  @Override
+  public boolean[] satisfyColumn(
+      long[] timestamps, boolean[] bitMap, Column values, int logicPositionCount) {
+    boolean[] leftResult = left.satisfyColumn(timestamps, bitMap, values, logicPositionCount);
+    boolean[] rightResult = right.satisfyColumn(timestamps, bitMap, values, logicPositionCount);
     for (int i = 0; i < leftResult.length; i++) {
       leftResult[i] = leftResult[i] || rightResult[i];
     }

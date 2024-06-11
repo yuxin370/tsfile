@@ -21,14 +21,20 @@ package org.apache.tsfile.encoding.decoder;
 
 import org.apache.tsfile.common.conf.TSFileConfig;
 import org.apache.tsfile.encoding.bitpacking.IntPacker;
+import org.apache.tsfile.enums.TSDataType;
 import org.apache.tsfile.exception.encoding.TsFileDecodingException;
+import org.apache.tsfile.read.common.block.column.BooleanColumn;
+import org.apache.tsfile.read.common.block.column.IntColumn;
+import org.apache.tsfile.utils.RLEPattern;
 import org.apache.tsfile.utils.ReadWriteForEncodingUtils;
+import org.apache.tsfile.write.UnSupportedDataTypeException;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.util.Optional;
 
 /** Decoder for int value using rle or bit-packing. */
 public class IntRleDecoder extends RleDecoder {
@@ -97,6 +103,73 @@ public class IntRleDecoder extends RleDecoder {
       isLengthAndBitWidthReaded = false;
     }
     return result;
+  }
+
+  /**
+   * read an RLEPattern from InputStream.
+   *
+   * @param buffer - ByteBuffer
+   * @return RLEPattern - Column,logic positionCount
+   */
+  @Override
+  public RLEPattern readRLEPattern(ByteBuffer buffer, TSDataType dataType) {
+    int[] tmp;
+    if (!isLengthAndBitWidthReaded) {
+      // start to read a new rle+bit-packing pattern
+      readLengthAndBitWidth(buffer);
+    }
+
+    if (currentCount == 0) {
+      try {
+        readNext();
+      } catch (IOException e) {
+        logger.error(
+            "tsfile-encoding IntRleDecoder: error occurs when reading all encoding number,"
+                + " length is {}, bit width is {}",
+            length,
+            bitWidth,
+            e);
+      }
+    }
+
+    int valueCount = currentCount;
+    switch (mode) {
+      case RLE:
+        tmp = new int[1];
+        tmp[0] = currentValue;
+        currentCount = 0;
+        break;
+      case BIT_PACKED:
+        tmp = new int[currentCount];
+        while (currentCount != 0) {
+          currentCount--;
+          tmp[valueCount - currentCount - 1] = currentBuffer[bitPackingNum - currentCount - 1];
+        }
+        break;
+      default:
+        throw new TsFileDecodingException(
+            String.format("tsfile-encoding IntRleDecoder: not a valid mode %s", mode));
+    }
+
+    if (!hasNextPackage()) {
+      isLengthAndBitWidthReaded = false;
+    }
+
+    switch (dataType) {
+      case INT32:
+        return new RLEPattern(
+            new IntColumn(tmp.length, Optional.empty(), tmp), new Integer(valueCount));
+      case BOOLEAN:
+        boolean[] tmpBoolean = new boolean[tmp.length];
+        for (int i = 0; i < tmpBoolean.length; i++) {
+          tmpBoolean[i] = tmp[i] == 0 ? false : true;
+        }
+        return new RLEPattern(
+            new BooleanColumn(1, Optional.empty(), tmpBoolean), new Integer(valueCount));
+      default:
+        throw new UnSupportedDataTypeException(
+            "unsupported datatype " + dataType + "for intDecoder.");
+    }
   }
 
   @Override

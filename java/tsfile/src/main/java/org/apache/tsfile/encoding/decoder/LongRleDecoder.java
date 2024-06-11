@@ -21,7 +21,10 @@ package org.apache.tsfile.encoding.decoder;
 
 import org.apache.tsfile.common.conf.TSFileConfig;
 import org.apache.tsfile.encoding.bitpacking.LongPacker;
+import org.apache.tsfile.enums.TSDataType;
 import org.apache.tsfile.exception.encoding.TsFileDecodingException;
+import org.apache.tsfile.read.common.block.column.LongColumn;
+import org.apache.tsfile.utils.RLEPattern;
 import org.apache.tsfile.utils.ReadWriteForEncodingUtils;
 
 import org.slf4j.Logger;
@@ -29,6 +32,7 @@ import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.util.Optional;
 
 /** Decoder for long value using rle or bit-packing. */
 public class LongRleDecoder extends RleDecoder {
@@ -92,6 +96,60 @@ public class LongRleDecoder extends RleDecoder {
       isLengthAndBitWidthReaded = false;
     }
     return result;
+  }
+
+  /**
+   * read an RLEPattern from InputStream.
+   *
+   * @param buffer - ByteBuffer
+   * @return RLEColumn - Column,logic positionCount
+   */
+  @Override
+  public RLEPattern readRLEPattern(ByteBuffer buffer, TSDataType dataType) {
+    long[] tmp;
+    if (!isLengthAndBitWidthReaded) {
+      // start to read a new rle+bit-packing pattern
+      readLengthAndBitWidth(buffer);
+    }
+
+    if (currentCount == 0) {
+      try {
+        readNext();
+      } catch (IOException e) {
+        logger.error(
+            "tsfile-encoding IntRleDecoder: error occurs when reading all encoding number,"
+                + " length is {}, bit width is {}",
+            length,
+            bitWidth,
+            e);
+      }
+    }
+
+    int valueCount = currentCount;
+    switch (mode) {
+      case RLE:
+        tmp = new long[1];
+        tmp[0] = currentValue;
+        currentCount = 0;
+        break;
+      case BIT_PACKED:
+        tmp = new long[currentCount];
+        while (currentCount != 0) {
+          currentCount--;
+          tmp[valueCount - currentCount - 1] = currentBuffer[bitPackingNum - currentCount - 1];
+        }
+        break;
+      default:
+        throw new TsFileDecodingException(
+            String.format("tsfile-encoding IntRleDecoder: not a valid mode %s", mode));
+    }
+
+    if (!hasNextPackage()) {
+      isLengthAndBitWidthReaded = false;
+    }
+
+    return new RLEPattern(
+        new LongColumn(tmp.length, Optional.empty(), tmp), new Integer(valueCount));
   }
 
   @Override

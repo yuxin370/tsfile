@@ -19,6 +19,7 @@
 
 package org.apache.tsfile.read.filter.basic;
 
+import org.apache.tsfile.block.column.Column;
 import org.apache.tsfile.file.metadata.IMetadata;
 import org.apache.tsfile.file.metadata.statistics.Statistics;
 import org.apache.tsfile.read.common.block.TsBlock;
@@ -48,6 +49,29 @@ public abstract class TimeFilter extends Filter {
     boolean[] satisfyInfo = new boolean[tsBlock.getPositionCount()];
     for (int i = 0; i < tsBlock.getPositionCount(); i++) {
       satisfyInfo[i] = timeSatisfy(tsBlock.getTimeByIndex(i));
+    }
+    return satisfyInfo;
+  }
+
+  @Override
+  public boolean[] satisfyColumn(long[] timestamps, Column values, int logicPositionCount) {
+    boolean[] satisfyInfo = new boolean[logicPositionCount];
+    for (int i = 0; i < logicPositionCount; i++) {
+      satisfyInfo[i] = timeSatisfy(timestamps[i]);
+    }
+    return satisfyInfo;
+  }
+
+  @Override
+  public boolean[] satisfyColumn(
+      long[] timestamps, boolean[] bitMap, Column values, int logicPositionCount) {
+    boolean[] satisfyInfo = new boolean[logicPositionCount];
+    for (int i = 0; i < logicPositionCount; i++) {
+      if (bitMap[i]) {
+        satisfyInfo[i] = false;
+      } else {
+        satisfyInfo[i] = timeSatisfy(timestamps[i]);
+      }
     }
     return satisfyInfo;
   }

@@ -35,6 +35,7 @@ import org.apache.tsfile.read.common.block.column.TimeColumn;
 import org.apache.tsfile.read.common.block.column.TimeColumnBuilder;
 import org.apache.tsfile.utils.Binary;
 
+import java.util.ArrayList;
 import java.util.List;
 
 import static java.lang.String.format;
@@ -78,6 +79,17 @@ public class TsBlockBuilder {
 
   public TsBlockBuilder(int initialExpectedEntries, List<TSDataType> types) {
     this(initialExpectedEntries, DEFAULT_MAX_TSBLOCK_SIZE_IN_BYTES, types);
+  }
+
+  public TsBlockBuilder(
+      List<TSDataType> types,
+      TimeColumnBuilder templateTimeColumnBuilder,
+      ColumnBuilder[] templateValueColumnBuilders) {
+    this(
+        DEFAULT_MAX_TSBLOCK_SIZE_IN_BYTES,
+        types,
+        templateTimeColumnBuilder,
+        templateValueColumnBuilders);
   }
 
   public static TsBlockBuilder createWithOnlyTimeColumn() {
@@ -217,6 +229,26 @@ public class TsBlockBuilder {
           throw new IllegalArgumentException("Unknown data type: " + types.get(i));
       }
     }
+  }
+
+  public void buildValueColumnBuilders(ColumnBuilder[] templateValueColumnBuilders) {
+    List<TSDataType> tmpTypes = new ArrayList<TSDataType>();
+    valueColumnBuilders = new ColumnBuilder[types.size()];
+    for (int i = 0; i < valueColumnBuilders.length; i++) {
+      tmpTypes.add(templateValueColumnBuilders[i].getDataType());
+      valueColumnBuilders[i] =
+          templateValueColumnBuilders[i].newColumnBuilderLike(
+              tsBlockBuilderStatus.createColumnBuilderStatus());
+    }
+    this.types = tmpTypes;
+  }
+
+  public void buildValueColumnBuilder(
+      int index, ColumnBuilder templateValueColumnBuilder, TSDataType dataType) {
+    valueColumnBuilders[index] =
+        templateValueColumnBuilder.newColumnBuilderLike(
+            tsBlockBuilderStatus.createColumnBuilderStatus());
+    this.types.set(index, dataType);
   }
 
   public void reset() {

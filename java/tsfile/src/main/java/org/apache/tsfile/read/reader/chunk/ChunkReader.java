@@ -91,7 +91,7 @@ public class ChunkReader extends AbstractChunkReader {
       if (pageDeleted(pageHeader)) {
         skipCurrentPage(pageHeader);
       } else {
-        pageReaderList.add(constructPageReader(pageHeader));
+        pageReaderList.add(constructCompressedPageReader(pageHeader));
       }
     }
   }
@@ -138,6 +138,22 @@ public class ChunkReader extends AbstractChunkReader {
             queryFilter);
     reader.setDeleteIntervalList(deleteIntervalList);
     return reader;
+  }
+
+  private PageReader constructCompressedPageReader(PageHeader pageHeader) throws IOException {
+    IUnCompressor unCompressor = IUnCompressor.getUnCompressor(chunkHeader.getCompressionType());
+    ByteBuffer pageData = readCompressedPageData(pageHeader, chunkDataBuffer);
+    PageReader compressedReader =
+        new PageReader(
+            pageHeader,
+            pageData,
+            chunkHeader.getDataType(),
+            unCompressor,
+            Decoder.getDecoderByType(chunkHeader.getEncodingType(), chunkHeader.getDataType()),
+            defaultTimeDecoder,
+            queryFilter);
+    compressedReader.setDeleteIntervalList(deleteIntervalList);
+    return compressedReader;
   }
 
   /////////////////////////////////////////////////////////////////////////////////////////////////

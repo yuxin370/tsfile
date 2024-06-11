@@ -19,6 +19,7 @@
 
 package org.apache.tsfile.read.reader.page;
 
+import org.apache.tsfile.compress.IUnCompressor;
 import org.apache.tsfile.encoding.decoder.Decoder;
 import org.apache.tsfile.enums.TSDataType;
 import org.apache.tsfile.file.header.PageHeader;
@@ -58,6 +59,7 @@ public class AlignedPageReader implements IPageReader {
 
   private boolean isModified;
   private TsBlockBuilder builder;
+  private List<IUnCompressor> valueUnCompressorList;
 
   private static final int MASK = 0x80;
 
@@ -80,6 +82,38 @@ public class AlignedPageReader implements IPageReader {
             new ValuePageReader(
                 valuePageHeaderList.get(i),
                 valuePageDataList.get(i),
+                valueDataTypeList.get(i),
+                valueDecoderList.get(i));
+        valuePageReaderList.add(valuePageReader);
+        isModified = isModified || valuePageReader.isModified();
+      } else {
+        valuePageReaderList.add(null);
+      }
+    }
+    this.globalTimeFilter = globalTimeFilter;
+    this.valueCount = valuePageReaderList.size();
+  }
+
+  public AlignedPageReader(
+      PageHeader timePageHeader,
+      ByteBuffer timePageData,
+      Decoder timeDecoder,
+      List<PageHeader> valuePageHeaderList,
+      List<ByteBuffer> valuePageDataList,
+      List<IUnCompressor> valueUnCompressorList,
+      List<TSDataType> valueDataTypeList,
+      List<Decoder> valueDecoderList,
+      Filter globalTimeFilter) {
+    timePageReader = new TimePageReader(timePageHeader, timePageData, timeDecoder);
+    isModified = timePageReader.isModified();
+    valuePageReaderList = new ArrayList<>(valuePageHeaderList.size());
+    for (int i = 0; i < valuePageHeaderList.size(); i++) {
+      if (valuePageHeaderList.get(i) != null) {
+        ValuePageReader valuePageReader =
+            new ValuePageReader(
+                valuePageHeaderList.get(i),
+                valuePageDataList.get(i),
+                valueUnCompressorList.get(i),
                 valueDataTypeList.get(i),
                 valueDecoderList.get(i));
         valuePageReaderList.add(valuePageReader);

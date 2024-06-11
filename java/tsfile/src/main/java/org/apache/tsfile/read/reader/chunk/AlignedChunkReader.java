@@ -19,6 +19,7 @@
 
 package org.apache.tsfile.read.reader.chunk;
 
+import org.apache.tsfile.compress.IUnCompressor;
 import org.apache.tsfile.encoding.decoder.Decoder;
 import org.apache.tsfile.enums.TSDataType;
 import org.apache.tsfile.file.MetaMarker;
@@ -192,6 +193,7 @@ public class AlignedChunkReader extends AbstractChunkReader {
     List<ByteBuffer> valuePageDataList = new ArrayList<>();
     List<TSDataType> valueDataTypeList = new ArrayList<>();
     List<Decoder> valueDecoderList = new ArrayList<>();
+    List<IUnCompressor> valueUnCompressorList = new ArrayList<>();
 
     boolean isAllNull = true;
     for (int i = 0; i < rawValuePageHeaderList.size(); i++) {
@@ -203,6 +205,7 @@ public class AlignedChunkReader extends AbstractChunkReader {
         valuePageDataList.add(null);
         valueDataTypeList.add(null);
         valueDecoderList.add(null);
+        valueUnCompressorList.add(null);
       } else if (pageDeleted(valuePageHeader, valueDeleteIntervalsList.get(i))) {
         valueChunkDataBufferList
             .get(i)
@@ -212,12 +215,17 @@ public class AlignedChunkReader extends AbstractChunkReader {
         valuePageDataList.add(null);
         valueDataTypeList.add(null);
         valueDecoderList.add(null);
+        valueUnCompressorList.add(null);
       } else {
         ChunkHeader valueChunkHeader = valueChunkHeaderList.get(i);
         valuePageHeaderList.add(valuePageHeader);
+        valueUnCompressorList.add(
+            IUnCompressor.getUnCompressor(valueChunkHeader.getCompressionType()));
         valuePageDataList.add(
-            ChunkReader.deserializePageData(
-                valuePageHeader, valueChunkDataBufferList.get(i), valueChunkHeader));
+            ChunkReader.readCompressedPageData(valuePageHeader, valueChunkDataBufferList.get(i)));
+        // valuePageDataList.add(
+        //     ChunkReader.deserializePageData(
+        //         valuePageHeader, valueChunkDataBufferList.get(i), valueChunkHeader));
         valueDataTypeList.add(valueChunkHeader.getDataType());
         valueDecoderList.add(
             Decoder.getDecoderByType(

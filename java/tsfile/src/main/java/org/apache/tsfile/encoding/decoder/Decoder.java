@@ -23,6 +23,7 @@ import org.apache.tsfile.enums.TSDataType;
 import org.apache.tsfile.exception.encoding.TsFileDecodingException;
 import org.apache.tsfile.file.metadata.enums.TSEncoding;
 import org.apache.tsfile.utils.Binary;
+import org.apache.tsfile.utils.RLEPattern;
 
 import java.io.IOException;
 import java.math.BigDecimal;
@@ -212,6 +213,10 @@ public abstract class Decoder {
 
   public BigDecimal readBigDecimal(ByteBuffer buffer) {
     throw new TsFileDecodingException("Method readBigDecimal is not supported by Decoder");
+  }
+
+  public RLEPattern readRLEPattern(ByteBuffer buffer, TSDataType dataType) {
+    throw new TsFileDecodingException("Method readRLEPattern is not supported by Decoder");
   }
 
   public abstract boolean hasNext(ByteBuffer buffer) throws IOException;

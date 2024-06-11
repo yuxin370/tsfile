@@ -20,6 +20,7 @@
 package org.apache.tsfile.read.reader.page;
 
 import org.apache.tsfile.block.column.ColumnBuilder;
+import org.apache.tsfile.compress.IUnCompressor;
 import org.apache.tsfile.encoding.decoder.Decoder;
 import org.apache.tsfile.enums.TSDataType;
 import org.apache.tsfile.file.header.PageHeader;
@@ -33,10 +34,13 @@ import org.apache.tsfile.utils.ReadWriteIOUtils;
 import org.apache.tsfile.utils.TsPrimitiveType;
 import org.apache.tsfile.write.UnSupportedDataTypeException;
 
+import java.io.IOException;
 import java.io.Serializable;
 import java.nio.ByteBuffer;
 import java.util.Arrays;
 import java.util.List;
+
+import static org.apache.tsfile.read.reader.chunk.ChunkReader.uncompressPageData;
 
 public class ValuePageReader {
 
@@ -56,6 +60,11 @@ public class ValuePageReader {
   /** value column in memory */
   protected ByteBuffer valueBuffer;
 
+  /** compressed value in memory. if this buffer is not null, then value is not uncompressed */
+  protected ByteBuffer compressedValueBuffer;
+
+  protected IUnCompressor uncompressor;
+
   /** A list of deleted intervals. */
   private List<TimeRange> deleteIntervalList;
 
@@ -70,6 +79,30 @@ public class ValuePageReader {
       splitDataToBitmapAndValue(pageData);
     }
     this.valueBuffer = pageData;
+  }
+
+  public ValuePageReader(
+      PageHeader pageHeader,
+      ByteBuffer pageData,
+      IUnCompressor uncompressor,
+      TSDataType dataType,
+      Decoder valueDecoder) {
+    this.dataType = dataType;
+    this.valueDecoder = valueDecoder;
+    this.pageHeader = pageHeader;
+    this.uncompressor = uncompressor;
+    this.compressedValueBuffer = pageData;
+  }
+
+  private void checkAndUncompressPageData() throws IOException {
+    if (this.valueBuffer == null && this.compressedValueBuffer != null) {
+      ByteBuffer pageData = uncompressPageData(pageHeader, uncompressor, compressedValueBuffer);
+      if (pageData != null) {
+        splitDataToBitmapAndValue(pageData);
+      }
+      this.valueBuffer = pageData;
+      this.compressedValueBuffer = null;
+    }
   }
 
   private void splitDataToBitmapAndValue(ByteBuffer pageData) {

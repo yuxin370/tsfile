@@ -19,6 +19,7 @@
 
 package org.apache.tsfile.read.filter.basic;
 
+import org.apache.tsfile.block.column.Column;
 import org.apache.tsfile.file.metadata.IMetadata;
 import org.apache.tsfile.read.common.TimeRange;
 import org.apache.tsfile.read.common.block.TsBlock;
@@ -81,6 +82,23 @@ public abstract class Filter {
    * @return for each row, true if the row is satisfied with the filter, false otherwise
    */
   public abstract boolean[] satisfyTsBlock(TsBlock tsBlock);
+
+  /**
+   * To examine whether the values(with one or many values) is satisfied with the filter.
+   *
+   * @return for each value, true if the value is satisfied with the filter, false otherwise
+   */
+  public abstract boolean[] satisfyColumn(long[] timestamps, Column values, int logicPositionCount);
+
+  /**
+   * To examine whether the values(with one or many values) is satisfied with the filter, where
+   * bitMap marks the deleted values.
+   *
+   * @return for each value, true if the value is not deleted and satisfied with the filter, false
+   *     otherwise
+   */
+  public abstract boolean[] satisfyColumn(
+      long[] timestamps, boolean[] bitMap, Column values, int logicPositionCount);
 
   /**
    * To examine whether the block can be skipped.
