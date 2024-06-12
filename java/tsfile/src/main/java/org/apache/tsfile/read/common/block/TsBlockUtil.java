@@ -30,11 +30,14 @@ import org.apache.tsfile.read.common.block.column.FloatColumnBuilder;
 import org.apache.tsfile.read.common.block.column.IntColumnBuilder;
 import org.apache.tsfile.read.common.block.column.LongColumnBuilder;
 import org.apache.tsfile.read.common.block.column.RLEColumn;
+import org.apache.tsfile.read.common.block.column.RLEColumnBuilder;
 import org.apache.tsfile.read.common.block.column.TimeColumn;
 import org.apache.tsfile.read.filter.basic.Filter;
 import org.apache.tsfile.read.reader.series.PaginationController;
+import org.apache.tsfile.utils.Pair;
 import org.apache.tsfile.write.UnSupportedDataTypeException;
 
+import java.util.Collections;
 import java.util.List;
 
 public class TsBlockUtil {
@@ -95,14 +98,65 @@ public class TsBlockUtil {
 
     // construct value columns
     for (int i = 0; i < builder.getValueColumnBuilders().length; i++) {
-      for (int rowIndex = 0; rowIndex < readEndIndex; rowIndex++) {
-        if (keepCurrentRow[rowIndex]) {
-          if (unFilteredBlock.getValueColumns()[i].isNull(rowIndex)) {
-            builder.getColumnBuilder(i).appendNull();
+      Column valueColumn = unFilteredBlock.getValueColumns()[i];
+      ColumnBuilder columnBuilder = builder.getColumnBuilder(i);
+      if (columnBuilder instanceof RLEColumnBuilder) {
+        Pair<Column[], int[]> patterns = ((RLEColumn) valueColumn).getVisibleColumns();
+        Column[] columns = patterns.getLeft();
+        int[] logicPositionCounts = patterns.getRight();
+        int rowIndex = 0, pidx = 0;
+        while (rowIndex < readEndIndex) {
+          ColumnBuilder valueColumnBuilder =
+              contructColumnBuilders(Collections.singletonList(valueColumn.getDataType()))[0];
+          int valueCount = 0;
+          if (columns[pidx].getPositionCount() == 1) {
+            int len =
+                logicPositionCounts[pidx] > readEndIndex - rowIndex
+                    ? readEndIndex - rowIndex
+                    : logicPositionCounts[pidx];
+            if (keepCurrentRow[rowIndex]) {
+              /**
+               * when meet RLE pattern, keepCurrentRows[rowIndex:rowIndex+logicpositionCount] must
+               * be the same
+               */
+              valueCount = len;
+            } else {
+              valueCount = 0;
+            }
+            rowIndex += len;
+            if (columns[pidx].isNull(0)) {
+              valueColumnBuilder.appendNull();
+            } else {
+              valueColumnBuilder.writeObject(columns[pidx].getObject(0));
+            }
           } else {
-            builder
-                .getColumnBuilder(i)
-                .writeObject(unFilteredBlock.getValueColumns()[i].getObject(rowIndex));
+            for (int j = 0;
+                j < logicPositionCounts[pidx] && rowIndex < readEndIndex;
+                j++, rowIndex++) {
+              if (keepCurrentRow[rowIndex]) {
+                valueCount++;
+                if (columns[pidx].isNull(j)) {
+                  valueColumnBuilder.appendNull();
+                } else {
+                  valueColumnBuilder.writeObject(columns[pidx].getObject(j));
+                }
+              }
+            }
+          }
+          if (valueCount != 0) {
+            ((RLEColumnBuilder) columnBuilder)
+                .writeRLEPattern(valueColumnBuilder.build(), valueCount);
+          }
+          pidx++;
+        }
+      } else {
+        for (int rowIndex = 0; rowIndex < readEndIndex; rowIndex++) {
+          if (keepCurrentRow[rowIndex]) {
+            if (valueColumn.isNull(rowIndex)) {
+              columnBuilder.appendNull();
+            } else {
+              columnBuilder.writeObject(valueColumn.getObject(rowIndex));
+            }
           }
         }
       }

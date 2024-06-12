@@ -19,17 +19,24 @@
 
 package org.apache.tsfile.read.reader.page;
 
+import org.apache.tsfile.block.column.Column;
 import org.apache.tsfile.block.column.ColumnBuilder;
 import org.apache.tsfile.compress.IUnCompressor;
 import org.apache.tsfile.encoding.decoder.Decoder;
+import org.apache.tsfile.encoding.decoder.DictionaryDecoder;
+import org.apache.tsfile.encoding.decoder.FloatDecoder;
+import org.apache.tsfile.encoding.decoder.RleDecoder;
 import org.apache.tsfile.enums.TSDataType;
 import org.apache.tsfile.file.header.PageHeader;
 import org.apache.tsfile.file.metadata.statistics.Statistics;
 import org.apache.tsfile.read.common.BatchData;
 import org.apache.tsfile.read.common.BatchDataFactory;
 import org.apache.tsfile.read.common.TimeRange;
+import org.apache.tsfile.read.common.block.TsBlockBuilder;
+import org.apache.tsfile.read.common.block.column.RLEColumnBuilder;
 import org.apache.tsfile.read.filter.basic.Filter;
 import org.apache.tsfile.utils.Binary;
+import org.apache.tsfile.utils.RLEPattern;
 import org.apache.tsfile.utils.ReadWriteIOUtils;
 import org.apache.tsfile.utils.TsPrimitiveType;
 import org.apache.tsfile.write.UnSupportedDataTypeException;
@@ -38,8 +45,10 @@ import java.io.IOException;
 import java.io.Serializable;
 import java.nio.ByteBuffer;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
 
+import static org.apache.tsfile.read.common.block.TsBlockUtil.contructColumnBuilders;
 import static org.apache.tsfile.read.reader.chunk.ChunkReader.uncompressPageData;
 
 public class ValuePageReader {
@@ -119,7 +128,9 @@ public class ValuePageReader {
    * return a BatchData with the corresponding timeBatch, the BatchData's dataType is same as this
    * sub sensor
    */
-  public BatchData nextBatch(long[] timeBatch, boolean ascending, Filter filter) {
+  public BatchData nextBatch(long[] timeBatch, boolean ascending, Filter filter)
+      throws IOException {
+    checkAndUncompressPageData();
     BatchData pageData = BatchDataFactory.createBatchData(dataType, ascending, false);
     for (int i = 0; i < timeBatch.length; i++) {
       if (((bitmap[i / 8] & 0xFF) & (MASK >>> (i % 8))) == 0) {
@@ -174,7 +185,8 @@ public class ValuePageReader {
     return pageData.flip();
   }
 
-  public TsPrimitiveType nextValue(long timestamp, int timeIndex) {
+  public TsPrimitiveType nextValue(long timestamp, int timeIndex) throws IOException {
+    checkAndUncompressPageData();
     TsPrimitiveType resultValue = null;
     if (valueBuffer == null || ((bitmap[timeIndex / 8] & 0xFF) & (MASK >>> (timeIndex % 8))) == 0) {
       return null;
@@ -231,7 +243,8 @@ public class ValuePageReader {
    * return the value array of the corresponding time, if this sub sensor don't have a value in a
    * time, just fill it with null
    */
-  public TsPrimitiveType[] nextValueBatch(long[] timeBatch) {
+  public TsPrimitiveType[] nextValueBatch(long[] timeBatch) throws IOException {
+    checkAndUncompressPageData();
     TsPrimitiveType[] valueBatch = new TsPrimitiveType[size];
     if (valueBuffer == null) {
       return valueBatch;
@@ -289,10 +302,9 @@ public class ValuePageReader {
   }
 
   public void writeColumnBuilderWithNextBatch(
-      int readEndIndex,
-      ColumnBuilder columnBuilder,
-      boolean[] keepCurrentRow,
-      boolean[] isDeleted) {
+      int readEndIndex, ColumnBuilder columnBuilder, boolean[] keepCurrentRow, boolean[] isDeleted)
+      throws IOException {
+    checkAndUncompressPageData();
     if (valueBuffer == null) {
       for (int i = 0; i < readEndIndex; i++) {
         if (keepCurrentRow[i]) {
@@ -380,7 +392,8 @@ public class ValuePageReader {
   }
 
   public void writeColumnBuilderWithNextBatch(
-      int readEndIndex, ColumnBuilder columnBuilder, boolean[] keepCurrentRow) {
+      int readEndIndex, ColumnBuilder columnBuilder, boolean[] keepCurrentRow) throws IOException {
+    checkAndUncompressPageData();
     if (valueBuffer == null) {
       for (int i = 0; i < readEndIndex; i++) {
         if (keepCurrentRow[i]) {
@@ -443,13 +456,110 @@ public class ValuePageReader {
     }
   }
 
+  public void writeColumnBuilderWithNextRLEBatch(
+      int readStartIndex, int readEndIndex, TsBlockBuilder builder, int index) {
+    if (!(builder.getColumnBuilder(index) instanceof RLEColumnBuilder)) {
+      int initialExpectedEntries = (int) pageHeader.getStatistics().getCount();
+      builder.buildValueColumnBuilder(
+          index, new RLEColumnBuilder(null, initialExpectedEntries, dataType), dataType);
+    }
+    RLEColumnBuilder valueBuilder = (RLEColumnBuilder) builder.getColumnBuilder(index);
+    int skipCount = 0; // record how many values should be skipped.
+    for (int i = 0; i < readStartIndex; i++) {
+      if (((bitmap[i / 8] & 0xFF) & (MASK >>> (i % 8))) == 0) {
+        continue;
+      }
+      skipCount++;
+    }
+
+    RLEPattern aPattern = valueDecoder.readRLEPattern(valueBuffer, dataType);
+    int patternLength = aPattern.getLogicPositionCount();
+    while (skipCount > 0) {
+      if (skipCount >= patternLength) {
+        skipCount -= patternLength;
+        aPattern = valueDecoder.readRLEPattern(valueBuffer, dataType);
+        patternLength = aPattern.getLogicPositionCount();
+      } else {
+        aPattern.subColumn(skipCount);
+        skipCount = 0;
+      }
+    }
+    int readIndex = readStartIndex;
+    Column valueColumn;
+    while (readIndex < readEndIndex) {
+      valueColumn = aPattern.getValue();
+      patternLength = aPattern.getLogicPositionCount();
+      if (patternLength == 0) {
+        break;
+      }
+      ColumnBuilder valueColumnBuilder =
+          contructColumnBuilders(Collections.singletonList(dataType))[0];
+      boolean cut = false;
+      int tmp = readIndex;
+      if (valueColumn.getPositionCount() == 1) {
+        for (int i = 0; i < patternLength && readIndex < readEndIndex; readIndex++) {
+          if (((bitmap[readIndex / 8] & 0xFF) & (MASK >>> (readIndex % 8))) == 0) {
+            valueColumnBuilder.appendNull();
+            cut = true;
+            continue;
+          }
+          valueColumnBuilder.writeObject(valueColumn.getObject(0));
+          i++;
+        }
+      } else {
+        for (int i = 0; i < patternLength && readIndex < readEndIndex; readIndex++) {
+          if (((bitmap[readIndex / 8] & 0xFF) & (MASK >>> (readIndex % 8))) == 0) {
+            valueColumnBuilder.appendNull();
+            cut = true;
+            continue;
+          }
+          valueColumnBuilder.writeObject(valueColumn.getObject(i));
+          i++;
+        }
+      }
+      if (cut) {
+        valueBuilder.writeRLEPattern(valueColumnBuilder.build(), readIndex - tmp);
+      } else {
+        valueBuilder.writeRLEPattern(valueColumn, readIndex - tmp);
+      }
+      aPattern = valueDecoder.readRLEPattern(valueBuffer, dataType);
+    }
+
+    if (readIndex < readEndIndex) {
+      ColumnBuilder valueColumnBuilder =
+          contructColumnBuilders(Collections.singletonList(dataType))[0];
+      int allMask = 0xFF >>> (readIndex % 8);
+      int idx = readIndex / 8;
+      int endidx = (readEndIndex + 7) / 8;
+      if (((bitmap[idx] & 0xFF) & allMask) != 0) {
+        throw new RuntimeException(
+            "valueBuffer has been exhausted, while readIndex still not get end.");
+      }
+      for (; idx <= endidx; idx++) {
+        if ((bitmap[idx] & 0xFF) != 0) {
+          throw new RuntimeException(
+              "valueBuffer has been exhausted, while readIndex still not get end.");
+        }
+      }
+      valueColumnBuilder.appendNull();
+      valueBuilder.writeRLEPattern(valueColumnBuilder.build(), readEndIndex - readIndex);
+    }
+  }
+
   public void writeColumnBuilderWithNextBatch(
-      int readStartIndex, int readEndIndex, ColumnBuilder columnBuilder) {
+      int readStartIndex, int readEndIndex, TsBlockBuilder builder, int index) throws IOException {
+    checkAndUncompressPageData();
+    ColumnBuilder columnBuilder = builder.getColumnBuilder(index);
     if (valueBuffer == null) {
       columnBuilder.appendNull(readEndIndex - readStartIndex);
       return;
     }
-
+    if (valueDecoder instanceof RleDecoder
+        || valueDecoder instanceof DictionaryDecoder
+        || (valueDecoder instanceof FloatDecoder && ((FloatDecoder) valueDecoder).isRLEDecoder())) {
+      writeColumnBuilderWithNextRLEBatch(readStartIndex, readEndIndex, builder, index);
+      return;
+    }
     switch (dataType) {
       case BOOLEAN:
         // skip useless data
@@ -607,7 +717,8 @@ public class ValuePageReader {
     return dataType;
   }
 
-  public byte[] getBitmap() {
+  public byte[] getBitmap() throws IOException {
+    checkAndUncompressPageData();
     return Arrays.copyOf(bitmap, bitmap.length);
   }
 }

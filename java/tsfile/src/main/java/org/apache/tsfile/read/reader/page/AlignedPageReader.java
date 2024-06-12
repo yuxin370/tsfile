@@ -250,7 +250,7 @@ public class AlignedPageReader implements IPageReader {
         unFilteredBlock, builder, pushDownFilter, paginationController);
   }
 
-  private void buildResultWithoutAnyFilterAndDelete(long[] timeBatch) {
+  private void buildResultWithoutAnyFilterAndDelete(long[] timeBatch) throws IOException {
     if (paginationController.hasCurOffset(timeBatch.length)) {
       paginationController.consumeOffset(timeBatch.length);
     } else {
@@ -279,8 +279,8 @@ public class AlignedPageReader implements IPageReader {
       for (int i = 0; i < valueCount; i++) {
         ValuePageReader pageReader = valuePageReaderList.get(i);
         if (pageReader != null) {
-          pageReader.writeColumnBuilderWithNextBatch(
-              readStartIndex, readEndIndex, builder.getColumnBuilder(i));
+          pageReader.writeColumnBuilderWithNextBatch(readStartIndex, readEndIndex, builder, i);
+          // readStartIndex, readEndIndex, builder.getColumnBuilder(i));
         } else {
           builder.getColumnBuilder(i).appendNull(readEndIndex - readStartIndex);
         }
@@ -329,8 +329,8 @@ public class AlignedPageReader implements IPageReader {
     return readEndIndex + 1;
   }
 
-  private void buildValueColumns(
-      int readEndIndex, boolean[] keepCurrentRow, boolean[][] isDeleted) {
+  private void buildValueColumns(int readEndIndex, boolean[] keepCurrentRow, boolean[][] isDeleted)
+      throws IOException {
     for (int i = 0; i < valueCount; i++) {
       ValuePageReader pageReader = valuePageReaderList.get(i);
       if (pageReader != null) {
@@ -354,7 +354,8 @@ public class AlignedPageReader implements IPageReader {
     }
   }
 
-  private void fillIsDeletedAndBitMask(long[] timeBatch, boolean[][] isDeleted, byte[] bitmask) {
+  private void fillIsDeletedAndBitMask(long[] timeBatch, boolean[][] isDeleted, byte[] bitmask)
+      throws IOException {
     for (int columnIndex = 0; columnIndex < valueCount; columnIndex++) {
       ValuePageReader pageReader = valuePageReaderList.get(columnIndex);
       if (pageReader != null) {

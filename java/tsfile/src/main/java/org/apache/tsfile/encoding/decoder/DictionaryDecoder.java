@@ -19,8 +19,12 @@
 
 package org.apache.tsfile.encoding.decoder;
 
+import org.apache.tsfile.enums.TSDataType;
 import org.apache.tsfile.file.metadata.enums.TSEncoding;
+import org.apache.tsfile.read.common.block.column.BinaryColumn;
+import org.apache.tsfile.read.common.block.column.BinaryColumnBuilder;
 import org.apache.tsfile.utils.Binary;
+import org.apache.tsfile.utils.RLEPattern;
 import org.apache.tsfile.utils.ReadWriteForEncodingUtils;
 
 import org.slf4j.Logger;
@@ -30,6 +34,7 @@ import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 
 public class DictionaryDecoder extends Decoder {
   private static final Logger logger = LoggerFactory.getLogger(DictionaryDecoder.class);
@@ -65,6 +70,29 @@ public class DictionaryDecoder extends Decoder {
     }
     int code = valueDecoder.readInt(buffer);
     return entryIndex.get(code);
+  }
+
+  @Override
+  public RLEPattern readRLEPattern(ByteBuffer buffer, TSDataType dataType) {
+    if (entryIndex == null) {
+      initMap(buffer);
+    }
+    RLEPattern codes = valueDecoder.readRLEPattern(buffer, TSDataType.INT32);
+    int positionCount = codes.getValue().getPositionCount();
+    if (positionCount == 1) {
+      // rle
+      return new RLEPattern(
+          new BinaryColumn(
+              1, Optional.empty(), new Binary[] {entryIndex.get(codes.getValue().getInt(0))}),
+          codes.getLogicPositionCount());
+    } else {
+      // bit-packed
+      BinaryColumnBuilder builder = new BinaryColumnBuilder(null, positionCount);
+      for (int i = 0; i < positionCount; i++) {
+        builder.writeBinary(entryIndex.get(codes.getValue().getInt(i)));
+      }
+      return new RLEPattern(builder.build(), codes.getLogicPositionCount());
+    }
   }
 
   private void initMap(ByteBuffer buffer) {
