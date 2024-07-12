@@ -122,7 +122,6 @@ public class RLEColumnBuilder implements ColumnBuilder {
     }
 
     if (bufCount != 0) {
-      // LOGGER.info("[tyx] writeBufValue when writeRLEPattern");
       writeBufValue();
     }
 
@@ -154,7 +153,6 @@ public class RLEColumnBuilder implements ColumnBuilder {
   public Column build() {
 
     if (bufCount != 0) {
-      // LOGGER.info("[tyx] writeBufValue when build");
       writeBufValue();
     }
 
@@ -201,7 +199,6 @@ public class RLEColumnBuilder implements ColumnBuilder {
   }
 
   private void writeBufValue() {
-    // LOGGER.info("[tyx] repeatCount = " + repeatCount + " bufCount = " + bufCount);
     // valueBuf is not null, push buf value to builder
     if (repeatCount > 8) {
       // write bit-packed column and run-length column separatly

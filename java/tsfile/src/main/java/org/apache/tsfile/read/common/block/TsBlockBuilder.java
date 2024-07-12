@@ -35,6 +35,9 @@ import org.apache.tsfile.read.common.block.column.TimeColumn;
 import org.apache.tsfile.read.common.block.column.TimeColumnBuilder;
 import org.apache.tsfile.utils.Binary;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import java.util.ArrayList;
 import java.util.List;
 
@@ -43,6 +46,7 @@ import static java.util.Objects.requireNonNull;
 import static org.apache.tsfile.utils.Preconditions.checkArgument;
 
 public class TsBlockBuilder {
+  private static final Logger LOGGER = LoggerFactory.getLogger(TsBlockBuilder.class);
 
   // We choose default initial size to be 8 for TsBlockBuilder and ColumnBuilder
   // so the underlying data is larger than the object overhead, and the size is power of 2.

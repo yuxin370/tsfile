@@ -37,10 +37,14 @@ import org.apache.tsfile.read.reader.series.PaginationController;
 import org.apache.tsfile.utils.Pair;
 import org.apache.tsfile.write.UnSupportedDataTypeException;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import java.util.Collections;
 import java.util.List;
 
 public class TsBlockUtil {
+  private static final Logger LOGGER = LoggerFactory.getLogger(TsBlockUtil.class);
 
   private TsBlockUtil() {
     // forbidding instantiation
@@ -106,33 +110,24 @@ public class TsBlockUtil {
         int[] logicPositionCounts = patterns.getRight();
         int rowIndex = 0, pidx = 0;
         while (rowIndex < readEndIndex) {
-          ColumnBuilder valueColumnBuilder =
-              contructColumnBuilders(Collections.singletonList(valueColumn.getDataType()))[0];
           int valueCount = 0;
+          int len =
+              logicPositionCounts[pidx] > readEndIndex - rowIndex
+                  ? readEndIndex - rowIndex
+                  : logicPositionCounts[pidx];
           if (columns[pidx].getPositionCount() == 1) {
-            int len =
-                logicPositionCounts[pidx] > readEndIndex - rowIndex
-                    ? readEndIndex - rowIndex
-                    : logicPositionCounts[pidx];
-            if (keepCurrentRow[rowIndex]) {
-              /**
-               * when meet RLE pattern, keepCurrentRows[rowIndex:rowIndex+logicpositionCount] must
-               * be the same
-               */
-              valueCount = len;
-            } else {
-              valueCount = 0;
+            for (int j = 0; j < len; j++, rowIndex++) {
+              if (keepCurrentRow[rowIndex]) {
+                valueCount++;
+              }
             }
-            rowIndex += len;
-            if (columns[pidx].isNull(0)) {
-              valueColumnBuilder.appendNull();
-            } else {
-              valueColumnBuilder.writeObject(columns[pidx].getObject(0));
+            if (valueCount > 0) {
+              ((RLEColumnBuilder) columnBuilder).writeRLEPattern(columns[pidx], valueCount);
             }
           } else {
-            for (int j = 0;
-                j < logicPositionCounts[pidx] && rowIndex < readEndIndex;
-                j++, rowIndex++) {
+            ColumnBuilder valueColumnBuilder =
+                contructColumnBuilders(Collections.singletonList(valueColumn.getDataType()))[0];
+            for (int j = 0; j < len; j++, rowIndex++) {
               if (keepCurrentRow[rowIndex]) {
                 valueCount++;
                 if (columns[pidx].isNull(j)) {
@@ -142,10 +137,10 @@ public class TsBlockUtil {
                 }
               }
             }
-          }
-          if (valueCount != 0) {
-            ((RLEColumnBuilder) columnBuilder)
-                .writeRLEPattern(valueColumnBuilder.build(), valueCount);
+            if (valueCount > 0) {
+              ((RLEColumnBuilder) columnBuilder)
+                  .writeRLEPattern(valueColumnBuilder.build(), valueCount);
+            }
           }
           pidx++;
         }

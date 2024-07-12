@@ -243,6 +243,7 @@ public class AlignedChunkReader extends AbstractChunkReader {
             defaultTimeDecoder,
             valuePageHeaderList,
             valuePageDataList,
+            valueUnCompressorList,
             valueDataTypeList,
             valueDecoderList,
             queryFilter);

@@ -41,9 +41,13 @@ import org.apache.tsfile.utils.ReadWriteIOUtils;
 import org.apache.tsfile.utils.TsPrimitiveType;
 import org.apache.tsfile.write.UnSupportedDataTypeException;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import java.io.IOException;
 import java.io.Serializable;
 import java.nio.ByteBuffer;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
@@ -52,7 +56,7 @@ import static org.apache.tsfile.read.common.block.TsBlockUtil.contructColumnBuil
 import static org.apache.tsfile.read.reader.chunk.ChunkReader.uncompressPageData;
 
 public class ValuePageReader {
-
+  private static final Logger LOGGER = LoggerFactory.getLogger(ValuePageReader.class);
   private static final int MASK = 0x80;
 
   private final PageHeader pageHeader;
@@ -391,15 +395,194 @@ public class ValuePageReader {
     }
   }
 
+  public void writeColumnBuilderWithNextRLEBatch(
+      int readEndIndex, TsBlockBuilder builder, int index, boolean[] keepCurrentRow) {
+    if (!(builder.getColumnBuilder(index) instanceof RLEColumnBuilder)) {
+      int initialExpectedEntries = (int) pageHeader.getStatistics().getCount();
+      builder.buildValueColumnBuilder(
+          index, new RLEColumnBuilder(null, initialExpectedEntries, dataType), dataType);
+    }
+    RLEColumnBuilder valueBuilder = (RLEColumnBuilder) builder.getColumnBuilder(index);
+
+    RLEPattern aPattern = valueDecoder.readRLEPattern(valueBuffer, dataType);
+    Column valueColumn;
+    int readIndex = 0, patternLength = 0;
+    boolean isrle = false;
+
+    int writedLength = 0;
+
+    while (readIndex < readEndIndex) {
+      valueColumn = aPattern.getValue();
+      patternLength = aPattern.getLogicPositionCount();
+      isrle = valueColumn.getPositionCount() == 1;
+      if (patternLength == 0) {
+        // column has been consumed up
+        break;
+      }
+
+      // get null value index and skip value segment
+      // base on the assumption that null value is minority and skip value is continous
+
+      List<Integer> nullIndexArray = new ArrayList<Integer>();
+      List<Integer> skipIndexArray = new ArrayList<Integer>();
+      int tmp = readIndex;
+      for (int idx = 0; idx < patternLength && readIndex < readEndIndex; readIndex++) {
+        if (((bitmap[readIndex / 8] & 0xFF) & (MASK >>> (readIndex % 8))) == 0) {
+          if (keepCurrentRow[readIndex]) {
+            nullIndexArray.add(idx);
+          }
+          continue;
+        }
+        if (!keepCurrentRow[readIndex]) {
+          skipIndexArray.add(idx);
+        }
+        idx++;
+      }
+
+      int writePatternLength = readIndex - tmp;
+      int skipidx = 0, skipCount = skipIndexArray.size();
+
+      if (nullIndexArray.isEmpty()) {
+        // no null to be appended
+        if (skipIndexArray.isEmpty()) {
+          // just write all the values
+
+          writedLength += writePatternLength;
+
+          valueBuilder.writeRLEPattern(valueColumn, writePatternLength);
+        } else if (isrle) {
+          // some value have to be skipped.
+
+          writedLength += (writePatternLength - skipIndexArray.size());
+
+          valueBuilder.writeRLEPattern(valueColumn, writePatternLength - skipIndexArray.size());
+        } else {
+
+          int nextSkipIndex = skipIndexArray.get(skipidx);
+          ColumnBuilder valueColumnBuilder =
+              contructColumnBuilders(Collections.singletonList(dataType))[0];
+          for (int i = 0; i < writePatternLength; i++) {
+            if (i == nextSkipIndex) {
+              skipidx++;
+              if (skipidx < skipCount) {
+                nextSkipIndex = skipIndexArray.get(skipidx);
+              }
+              continue;
+            }
+            valueColumnBuilder.writeObject(valueColumn.getObject(i));
+          }
+
+          writedLength += (writePatternLength - skipIndexArray.size());
+
+          valueBuilder.writeRLEPattern(
+              valueColumnBuilder.build(), writePatternLength - skipIndexArray.size());
+        }
+      } else {
+
+        // some null may be appended
+        ColumnBuilder valueColumnBuilder =
+            contructColumnBuilders(Collections.singletonList(dataType))[0];
+        int nullCount = nullIndexArray.size();
+        int lastNullIndex = -1, nullidx = 0;
+        int nextNullIndex = nullIndexArray.get(nullidx);
+        isrle = valueColumn.getPositionCount() == 1;
+        Object value = null;
+        if (isrle) {
+          value = valueColumn.getObject(0);
+        }
+        if (skipIndexArray.isEmpty()) {
+          // all the null need to be appended
+          for (int i = 0; i < writePatternLength; i++) {
+            if (i == nextNullIndex) {
+              if (nextNullIndex != lastNullIndex) {
+                valueColumnBuilder.writeObject(isrle ? value : valueColumn.getObject(i));
+              }
+              valueColumnBuilder.appendNull();
+              lastNullIndex = nextNullIndex;
+              nullidx += 1;
+              if (nullidx < nullCount) {
+                nextNullIndex = nullIndexArray.get(nullidx);
+              }
+              continue;
+            }
+            valueColumnBuilder.writeObject(isrle ? value : valueColumn.getObject(i));
+          }
+
+          writedLength += (writePatternLength + nullCount);
+
+          valueBuilder.writeRLEPattern(valueColumnBuilder.build(), writePatternLength + nullCount);
+        } else {
+          int nextSkipIndex = skipIndexArray.get(skipidx);
+          for (int i = 0; i < writePatternLength; i++) {
+            if (i == nextSkipIndex) {
+              skipidx++;
+              if (skipidx < skipCount) {
+                nextSkipIndex = skipIndexArray.get(skipidx);
+              }
+              continue;
+            }
+            if (i == nextNullIndex) {
+              if (nextNullIndex != lastNullIndex) {
+                valueColumnBuilder.writeObject(isrle ? value : valueColumn.getObject(i));
+              }
+              valueColumnBuilder.appendNull();
+              lastNullIndex = nextNullIndex;
+              nullidx += 1;
+              if (nullidx < nullCount) {
+                nextNullIndex = nullIndexArray.get(nullidx);
+              }
+              continue;
+            }
+            valueColumnBuilder.writeObject(isrle ? value : valueColumn.getObject(i));
+          }
+
+          writedLength += (writePatternLength - skipIndexArray.size() + nullCount);
+
+          valueBuilder.writeRLEPattern(
+              valueColumnBuilder.build(), writePatternLength - skipIndexArray.size() + nullCount);
+        }
+      }
+      aPattern = valueDecoder.readRLEPattern(valueBuffer, dataType);
+    }
+
+    if (readIndex < readEndIndex) {
+      ColumnBuilder valueColumnBuilder =
+          contructColumnBuilders(Collections.singletonList(dataType))[0];
+      int allMask = 0xFF >>> (readIndex % 8);
+      int idx = readIndex / 8;
+      int endidx = (readEndIndex + 7) / 8;
+      if (((bitmap[idx] & 0xFF) & allMask) != 0) {
+        throw new RuntimeException(
+            "valueBuffer has been exhausted, while readIndex still not get end.");
+      }
+      for (; idx <= endidx; idx++) {
+        if ((bitmap[idx] & 0xFF) != 0) {
+          throw new RuntimeException(
+              "valueBuffer has been exhausted, while readIndex still not get end.");
+        }
+      }
+      valueColumnBuilder.appendNull();
+      valueBuilder.writeRLEPattern(valueColumnBuilder.build(), readEndIndex - readIndex);
+    }
+  }
+
   public void writeColumnBuilderWithNextBatch(
-      int readEndIndex, ColumnBuilder columnBuilder, boolean[] keepCurrentRow) throws IOException {
+      int readEndIndex, TsBlockBuilder builder, int index, boolean[] keepCurrentRow)
+      throws IOException {
     checkAndUncompressPageData();
+    ColumnBuilder columnBuilder = builder.getColumnBuilder(index);
     if (valueBuffer == null) {
       for (int i = 0; i < readEndIndex; i++) {
         if (keepCurrentRow[i]) {
           columnBuilder.appendNull();
         }
       }
+      return;
+    }
+    if (valueDecoder instanceof RleDecoder
+        || valueDecoder instanceof DictionaryDecoder
+        || (valueDecoder instanceof FloatDecoder && ((FloatDecoder) valueDecoder).isRLEDecoder())) {
+      writeColumnBuilderWithNextRLEBatch(readEndIndex, builder, index, keepCurrentRow);
       return;
     }
     for (int i = 0; i < readEndIndex; i++) {
@@ -464,6 +647,8 @@ public class ValuePageReader {
           index, new RLEColumnBuilder(null, initialExpectedEntries, dataType), dataType);
     }
     RLEColumnBuilder valueBuilder = (RLEColumnBuilder) builder.getColumnBuilder(index);
+
+    // skip the precedent values, taking null value into count;
     int skipCount = 0; // record how many values should be skipped.
     for (int i = 0; i < readStartIndex; i++) {
       if (((bitmap[i / 8] & 0xFF) & (MASK >>> (i % 8))) == 0) {
@@ -490,37 +675,56 @@ public class ValuePageReader {
       valueColumn = aPattern.getValue();
       patternLength = aPattern.getLogicPositionCount();
       if (patternLength == 0) {
+        // column has been consumed up
         break;
       }
-      ColumnBuilder valueColumnBuilder =
-          contructColumnBuilders(Collections.singletonList(dataType))[0];
-      boolean cut = false;
+
+      // get null value idx;
+      // based on the assumption that zero is minority;
+      List<Integer> nullIndexArray = new ArrayList<Integer>();
       int tmp = readIndex;
-      if (valueColumn.getPositionCount() == 1) {
-        for (int i = 0; i < patternLength && readIndex < readEndIndex; readIndex++) {
-          if (((bitmap[readIndex / 8] & 0xFF) & (MASK >>> (readIndex % 8))) == 0) {
-            valueColumnBuilder.appendNull();
-            cut = true;
-            continue;
-          }
-          valueColumnBuilder.writeObject(valueColumn.getObject(0));
-          i++;
+      for (int idx = 0; idx < patternLength && readIndex < readEndIndex; readIndex++) {
+        if (((bitmap[readIndex / 8] & 0xFF) & (MASK >>> (readIndex % 8))) == 0) {
+          nullIndexArray.add(idx);
+          continue;
         }
-      } else {
-        for (int i = 0; i < patternLength && readIndex < readEndIndex; readIndex++) {
-          if (((bitmap[readIndex / 8] & 0xFF) & (MASK >>> (readIndex % 8))) == 0) {
-            valueColumnBuilder.appendNull();
-            cut = true;
-            continue;
-          }
-          valueColumnBuilder.writeObject(valueColumn.getObject(i));
-          i++;
-        }
+        idx++;
       }
-      if (cut) {
-        valueBuilder.writeRLEPattern(valueColumnBuilder.build(), readIndex - tmp);
+
+      int writePatternLength = readIndex - tmp;
+      if (nullIndexArray.isEmpty()) {
+        // no null nead to be inserted.
+        valueBuilder.writeRLEPattern(valueColumn, writePatternLength);
+
       } else {
-        valueBuilder.writeRLEPattern(valueColumn, readIndex - tmp);
+        ColumnBuilder valueColumnBuilder =
+            contructColumnBuilders(Collections.singletonList(dataType))[0];
+        int nullCount = nullIndexArray.size();
+        boolean isrle = valueColumn.getPositionCount() == 1;
+        Object value = null;
+        if (isrle) {
+          value = valueColumn.getObject(0);
+        }
+        // if(valueColumn.getPositionCount() == 1){
+        // }else{
+        int lastNullIndex = -1, nullidx = 0;
+        int nextNullIndex = nullIndexArray.get(nullidx);
+        for (int i = 0; i < writePatternLength; i++) {
+          if (i == nextNullIndex) {
+            if (nextNullIndex != lastNullIndex) {
+              valueColumnBuilder.writeObject(isrle ? value : valueColumn.getObject(i));
+            }
+            valueColumnBuilder.appendNull();
+            lastNullIndex = nextNullIndex;
+            nullidx += 1;
+            if (nullidx < nullCount) {
+              nextNullIndex = nullIndexArray.get(nullidx);
+            }
+            continue;
+          }
+          valueColumnBuilder.writeObject(isrle ? value : valueColumn.getObject(i));
+        }
+        valueBuilder.writeRLEPattern(valueColumnBuilder.build(), writePatternLength + nullCount);
       }
       aPattern = valueDecoder.readRLEPattern(valueBuffer, dataType);
     }

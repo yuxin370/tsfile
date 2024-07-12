@@ -341,8 +341,8 @@ public class AlignedPageReader implements IPageReader {
               keepCurrentRow,
               Objects.requireNonNull(isDeleted)[i]);
         } else {
-          pageReader.writeColumnBuilderWithNextBatch(
-              readEndIndex, builder.getColumnBuilder(i), keepCurrentRow);
+          pageReader.writeColumnBuilderWithNextBatch(readEndIndex, builder, i, keepCurrentRow);
+          // readEndIndex, builder.getColumnBuilder(i), keepCurrentRow);
         }
       } else {
         for (int j = 0; j < readEndIndex; j++) {
