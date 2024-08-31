@@ -409,8 +409,6 @@ public class ValuePageReader {
     int readIndex = 0, patternLength = 0;
     boolean isrle = false;
 
-    int writedLength = 0;
-
     while (readIndex < readEndIndex) {
       valueColumn = aPattern.getValue();
       patternLength = aPattern.getLogicPositionCount();
@@ -426,38 +424,36 @@ public class ValuePageReader {
       List<Integer> nullIndexArray = new ArrayList<Integer>();
       List<Integer> skipIndexArray = new ArrayList<Integer>();
       int tmp = readIndex;
+      int doNothingSkipCount = 0;
       for (int idx = 0; idx < patternLength && readIndex < readEndIndex; readIndex++) {
         if (((bitmap[readIndex / 8] & 0xFF) & (MASK >>> (readIndex % 8))) == 0) {
           if (keepCurrentRow[readIndex]) {
-            nullIndexArray.add(idx);
+            nullIndexArray.add(readIndex - tmp);
+          } else {
+            doNothingSkipCount++;
           }
           continue;
         }
         if (!keepCurrentRow[readIndex]) {
-          skipIndexArray.add(idx);
+          skipIndexArray.add(readIndex - tmp);
         }
         idx++;
       }
-
       int writePatternLength = readIndex - tmp;
       int skipidx = 0, skipCount = skipIndexArray.size();
 
-      if (nullIndexArray.isEmpty()) {
+      if (nullIndexArray.size() == 0) {
         // no null to be appended
-        if (skipIndexArray.isEmpty()) {
+        if (skipIndexArray.size() == 0) {
           // just write all the values
 
-          writedLength += writePatternLength;
-
-          valueBuilder.writeRLEPattern(valueColumn, writePatternLength);
+          valueBuilder.writeRLEPattern(valueColumn, writePatternLength - doNothingSkipCount);
         } else if (isrle) {
           // some value have to be skipped.
 
-          writedLength += (writePatternLength - skipIndexArray.size());
-
-          valueBuilder.writeRLEPattern(valueColumn, writePatternLength - skipIndexArray.size());
+          valueBuilder.writeRLEPattern(
+              valueColumn, writePatternLength - doNothingSkipCount - skipIndexArray.size());
         } else {
-
           int nextSkipIndex = skipIndexArray.get(skipidx);
           ColumnBuilder valueColumnBuilder =
               contructColumnBuilders(Collections.singletonList(dataType))[0];
@@ -472,16 +468,16 @@ public class ValuePageReader {
             valueColumnBuilder.writeObject(valueColumn.getObject(i));
           }
 
-          writedLength += (writePatternLength - skipIndexArray.size());
-
           valueBuilder.writeRLEPattern(
-              valueColumnBuilder.build(), writePatternLength - skipIndexArray.size());
+              valueColumnBuilder.build(),
+              writePatternLength - doNothingSkipCount - skipIndexArray.size());
         }
       } else {
 
         // some null may be appended
         ColumnBuilder valueColumnBuilder =
             contructColumnBuilders(Collections.singletonList(dataType))[0];
+        int patternIdx = 0;
         int nullCount = nullIndexArray.size();
         int lastNullIndex = -1, nullidx = 0;
         int nextNullIndex = nullIndexArray.get(nullidx);
@@ -494,23 +490,19 @@ public class ValuePageReader {
           // all the null need to be appended
           for (int i = 0; i < writePatternLength; i++) {
             if (i == nextNullIndex) {
-              if (nextNullIndex != lastNullIndex) {
-                valueColumnBuilder.writeObject(isrle ? value : valueColumn.getObject(i));
-              }
               valueColumnBuilder.appendNull();
-              lastNullIndex = nextNullIndex;
               nullidx += 1;
               if (nullidx < nullCount) {
                 nextNullIndex = nullIndexArray.get(nullidx);
               }
               continue;
             }
-            valueColumnBuilder.writeObject(isrle ? value : valueColumn.getObject(i));
+            valueColumnBuilder.writeObject(isrle ? value : valueColumn.getObject(patternIdx));
+            patternIdx++;
           }
 
-          writedLength += (writePatternLength + nullCount);
-
-          valueBuilder.writeRLEPattern(valueColumnBuilder.build(), writePatternLength + nullCount);
+          valueBuilder.writeRLEPattern(
+              valueColumnBuilder.build(), writePatternLength - doNothingSkipCount);
         } else {
           int nextSkipIndex = skipIndexArray.get(skipidx);
           for (int i = 0; i < writePatternLength; i++) {
@@ -519,50 +511,43 @@ public class ValuePageReader {
               if (skipidx < skipCount) {
                 nextSkipIndex = skipIndexArray.get(skipidx);
               }
+              patternIdx++;
               continue;
             }
             if (i == nextNullIndex) {
-              if (nextNullIndex != lastNullIndex) {
-                valueColumnBuilder.writeObject(isrle ? value : valueColumn.getObject(i));
-              }
               valueColumnBuilder.appendNull();
-              lastNullIndex = nextNullIndex;
               nullidx += 1;
               if (nullidx < nullCount) {
                 nextNullIndex = nullIndexArray.get(nullidx);
               }
               continue;
             }
-            valueColumnBuilder.writeObject(isrle ? value : valueColumn.getObject(i));
+            valueColumnBuilder.writeObject(isrle ? value : valueColumn.getObject(patternIdx));
+            patternIdx++;
           }
 
-          writedLength += (writePatternLength - skipIndexArray.size() + nullCount);
-
           valueBuilder.writeRLEPattern(
-              valueColumnBuilder.build(), writePatternLength - skipIndexArray.size() + nullCount);
+              valueColumnBuilder.build(),
+              writePatternLength - doNothingSkipCount - skipIndexArray.size());
         }
       }
       aPattern = valueDecoder.readRLEPattern(valueBuffer, dataType);
     }
-
     if (readIndex < readEndIndex) {
+      int nullCounts = 0;
       ColumnBuilder valueColumnBuilder =
           contructColumnBuilders(Collections.singletonList(dataType))[0];
-      int allMask = 0xFF >>> (readIndex % 8);
-      int idx = readIndex / 8;
-      int endidx = (readEndIndex + 7) / 8;
-      if (((bitmap[idx] & 0xFF) & allMask) != 0) {
-        throw new RuntimeException(
-            "valueBuffer has been exhausted, while readIndex still not get end.");
-      }
-      for (; idx <= endidx; idx++) {
-        if ((bitmap[idx] & 0xFF) != 0) {
+      for (int i = readIndex; i < readEndIndex; i++) {
+        if (((bitmap[i / 8] & 0xFF) & (MASK >>> (i % 8))) != 0) {
           throw new RuntimeException(
-              "valueBuffer has been exhausted, while readIndex still not get end.");
+              "value buffer has been epmty, but value [" + i + "] is not null.");
+        }
+        if (keepCurrentRow[i]) {
+          nullCounts++;
         }
       }
       valueColumnBuilder.appendNull();
-      valueBuilder.writeRLEPattern(valueColumnBuilder.build(), readEndIndex - readIndex);
+      valueBuilder.writeRLEPattern(valueColumnBuilder.build(), nullCounts);
     }
   }
 
@@ -656,7 +641,6 @@ public class ValuePageReader {
       }
       skipCount++;
     }
-
     RLEPattern aPattern = valueDecoder.readRLEPattern(valueBuffer, dataType);
     int patternLength = aPattern.getLogicPositionCount();
     while (skipCount > 0) {
@@ -685,13 +669,14 @@ public class ValuePageReader {
       int tmp = readIndex;
       for (int idx = 0; idx < patternLength && readIndex < readEndIndex; readIndex++) {
         if (((bitmap[readIndex / 8] & 0xFF) & (MASK >>> (readIndex % 8))) == 0) {
-          nullIndexArray.add(idx);
+          nullIndexArray.add(readIndex - tmp);
           continue;
         }
         idx++;
       }
-
       int writePatternLength = readIndex - tmp;
+      // int writePatternLength =  (realWriteLength < patternLength ? realWriteLength :
+      // patternLength);
       if (nullIndexArray.isEmpty()) {
         // no null nead to be inserted.
         valueBuilder.writeRLEPattern(valueColumn, writePatternLength);
@@ -707,24 +692,22 @@ public class ValuePageReader {
         }
         // if(valueColumn.getPositionCount() == 1){
         // }else{
-        int lastNullIndex = -1, nullidx = 0;
+        int nullidx = 0;
         int nextNullIndex = nullIndexArray.get(nullidx);
+        int patternIdx = 0;
         for (int i = 0; i < writePatternLength; i++) {
           if (i == nextNullIndex) {
-            if (nextNullIndex != lastNullIndex) {
-              valueColumnBuilder.writeObject(isrle ? value : valueColumn.getObject(i));
-            }
             valueColumnBuilder.appendNull();
-            lastNullIndex = nextNullIndex;
             nullidx += 1;
             if (nullidx < nullCount) {
               nextNullIndex = nullIndexArray.get(nullidx);
             }
             continue;
           }
-          valueColumnBuilder.writeObject(isrle ? value : valueColumn.getObject(i));
+          valueColumnBuilder.writeObject(isrle ? value : valueColumn.getObject(patternIdx));
+          patternIdx++;
         }
-        valueBuilder.writeRLEPattern(valueColumnBuilder.build(), writePatternLength + nullCount);
+        valueBuilder.writeRLEPattern(valueColumnBuilder.build(), writePatternLength);
       }
       aPattern = valueDecoder.readRLEPattern(valueBuffer, dataType);
     }
@@ -732,17 +715,10 @@ public class ValuePageReader {
     if (readIndex < readEndIndex) {
       ColumnBuilder valueColumnBuilder =
           contructColumnBuilders(Collections.singletonList(dataType))[0];
-      int allMask = 0xFF >>> (readIndex % 8);
-      int idx = readIndex / 8;
-      int endidx = (readEndIndex + 7) / 8;
-      if (((bitmap[idx] & 0xFF) & allMask) != 0) {
-        throw new RuntimeException(
-            "valueBuffer has been exhausted, while readIndex still not get end.");
-      }
-      for (; idx <= endidx; idx++) {
-        if ((bitmap[idx] & 0xFF) != 0) {
+      for (int i = readIndex; i < readEndIndex; i++) {
+        if (((bitmap[i / 8] & 0xFF) & (MASK >>> (i % 8))) != 0) {
           throw new RuntimeException(
-              "valueBuffer has been exhausted, while readIndex still not get end.");
+              "value buffer has been empty, but value [" + i + "] is not null.");
         }
       }
       valueColumnBuilder.appendNull();
