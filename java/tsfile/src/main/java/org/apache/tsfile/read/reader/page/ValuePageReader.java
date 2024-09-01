@@ -479,7 +479,7 @@ public class ValuePageReader {
             contructColumnBuilders(Collections.singletonList(dataType))[0];
         int patternIdx = 0;
         int nullCount = nullIndexArray.size();
-        int lastNullIndex = -1, nullidx = 0;
+        int nullidx = 0;
         int nextNullIndex = nullIndexArray.get(nullidx);
         isrle = valueColumn.getPositionCount() == 1;
         Object value = null;
@@ -539,8 +539,11 @@ public class ValuePageReader {
           contructColumnBuilders(Collections.singletonList(dataType))[0];
       for (int i = readIndex; i < readEndIndex; i++) {
         if (((bitmap[i / 8] & 0xFF) & (MASK >>> (i % 8))) != 0) {
-          throw new RuntimeException(
-              "value buffer has been epmty, but value [" + i + "] is not null.");
+          if (keepCurrentRow[i]) {
+            throw new RuntimeException(
+                "value buffer has been epmty, but value [" + i + "] is not null.");
+          }
+          continue;
         }
         if (keepCurrentRow[i]) {
           nullCounts++;
