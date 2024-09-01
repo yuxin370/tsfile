@@ -454,6 +454,7 @@ public class ValuePageReader {
           valueBuilder.writeRLEPattern(
               valueColumn, writePatternLength - doNothingSkipCount - skipIndexArray.size());
         } else {
+          int patternIdx = 0;
           int nextSkipIndex = skipIndexArray.get(skipidx);
           ColumnBuilder valueColumnBuilder =
               contructColumnBuilders(Collections.singletonList(dataType))[0];
@@ -465,7 +466,8 @@ public class ValuePageReader {
               }
               continue;
             }
-            valueColumnBuilder.writeObject(valueColumn.getObject(i));
+            valueColumnBuilder.writeObject(valueColumn.getObject(patternIdx));
+            patternIdx ++;
           }
 
           valueBuilder.writeRLEPattern(
