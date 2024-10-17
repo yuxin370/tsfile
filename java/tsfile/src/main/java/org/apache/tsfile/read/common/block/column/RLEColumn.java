@@ -191,9 +191,13 @@ public class RLEColumn implements Column {
     for (int i = 0, idx = startIndex; idx <= endIndex; i++, idx++) {
       logicPositionCount[i] = patternOffsetIndex[idx + 1] - patternOffsetIndex[idx];
     }
-    logicPositionCount[0] = patternOffsetIndex[startIndex + 1] - arrayOffset;
-    logicPositionCount[endIndex - startIndex] =
-        arrayOffset + positionCount - patternOffsetIndex[endIndex];
+    if (endIndex != startIndex) {
+      logicPositionCount[0] = patternOffsetIndex[startIndex + 1] - arrayOffset;
+      logicPositionCount[endIndex - startIndex] =
+          arrayOffset + positionCount - patternOffsetIndex[endIndex];
+    } else {
+      logicPositionCount[0] = positionCount;
+    }
     return new Pair<Column[], int[]>(visibleColumns, logicPositionCount);
   }
 
@@ -526,7 +530,7 @@ public class RLEColumn implements Column {
     patternOffsetIndex[startIndex] = 0;
     int[] patternOffsetIndexTmp = Arrays.copyOf(patternOffsetIndex, patternOffsetIndex.length);
     for (int i = startIndex + 1, j = endIndex; i <= endIndex; i++, j--) {
-      patternOffsetIndex[i] = patternOffsetIndex[i - 1] + patternOffsetIndexTmp[j];
+      patternOffsetIndex[i] = patternOffsetIndex[i - 1] + (patternOffsetIndexTmp[j+1] - patternOffsetIndexTmp[j]);
     }
   }
 

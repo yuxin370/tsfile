@@ -423,14 +423,16 @@ public class ValuePageReader {
 
       List<Integer> nullIndexArray = new ArrayList<Integer>();
       List<Integer> skipIndexArray = new ArrayList<Integer>();
+      List<Integer> doNothingArray = new ArrayList<Integer>();
       int tmp = readIndex;
-      int doNothingSkipCount = 0;
+      // int doNothingSkipCount = 0;
       for (int idx = 0; idx < patternLength && readIndex < readEndIndex; readIndex++) {
         if (((bitmap[readIndex / 8] & 0xFF) & (MASK >>> (readIndex % 8))) == 0) {
           if (keepCurrentRow[readIndex]) {
             nullIndexArray.add(readIndex - tmp);
           } else {
-            doNothingSkipCount++;
+            doNothingArray.add(readIndex - tmp);
+            // doNothingSkipCount++;
           }
           continue;
         }
@@ -441,7 +443,7 @@ public class ValuePageReader {
       }
       int writePatternLength = readIndex - tmp;
       int skipidx = 0, skipCount = skipIndexArray.size();
-
+      int doNothingIdx = 0, doNothingSkipCount = doNothingArray.size();
       if (nullIndexArray.size() == 0) {
         // no null to be appended
         if (skipIndexArray.size() == 0) {
@@ -452,10 +454,11 @@ public class ValuePageReader {
           // some value have to be skipped.
 
           valueBuilder.writeRLEPattern(
-              valueColumn, writePatternLength - doNothingSkipCount - skipIndexArray.size());
+              valueColumn, writePatternLength - doNothingSkipCount - skipCount);
         } else {
           int patternIdx = 0;
           int nextSkipIndex = skipIndexArray.get(skipidx);
+          int nextDoNothingIndex = doNothingSkipCount == 0 ? -1 : doNothingArray.get(doNothingIdx);
           ColumnBuilder valueColumnBuilder =
               contructColumnBuilders(Collections.singletonList(dataType))[0];
           for (int i = 0; i < writePatternLength; i++) {
@@ -464,15 +467,20 @@ public class ValuePageReader {
               if (skipidx < skipCount) {
                 nextSkipIndex = skipIndexArray.get(skipidx);
               }
-              continue;
+            } else if (i == nextDoNothingIndex) {
+              doNothingIdx++;
+              if (doNothingIdx < doNothingSkipCount) {
+                nextDoNothingIndex = doNothingArray.get(doNothingIdx);
+              }
+            } else {
+              valueColumnBuilder.writeObject(valueColumn.getObject(patternIdx));
+              patternIdx++;
             }
-            valueColumnBuilder.writeObject(valueColumn.getObject(patternIdx));
-            patternIdx ++;
           }
 
           valueBuilder.writeRLEPattern(
               valueColumnBuilder.build(),
-              writePatternLength - doNothingSkipCount - skipIndexArray.size());
+              writePatternLength - doNothingArray.size() - skipIndexArray.size());
         }
       } else {
 
@@ -483,8 +491,11 @@ public class ValuePageReader {
         int nullCount = nullIndexArray.size();
         int nullidx = 0;
         int nextNullIndex = nullIndexArray.get(nullidx);
+        int nextDoNothingIndex = doNothingSkipCount == 0 ? -1 : doNothingArray.get(doNothingIdx);
         isrle = valueColumn.getPositionCount() == 1;
         Object value = null;
+        // LOGGER.info(
+        //     "[tyx] nullCount = " + nullCount + " doNothingSkipCount = " + doNothingSkipCount);
         if (isrle) {
           value = valueColumn.getObject(0);
         }
@@ -498,9 +509,23 @@ public class ValuePageReader {
                 nextNullIndex = nullIndexArray.get(nullidx);
               }
               continue;
+            } else if (i == nextDoNothingIndex) {
+              doNothingIdx++;
+              if (doNothingIdx < doNothingSkipCount) {
+                nextDoNothingIndex = doNothingArray.get(doNothingIdx);
+              }
+            } else {
+              // LOGGER.info(
+              //     "[tyx] write a value at "
+              //         + patternIdx
+              //         + " total(writePatternLength) = "
+              //         + patternLength
+              //         + "("
+              //         + writePatternLength
+              //         + ")");
+              valueColumnBuilder.writeObject(isrle ? value : valueColumn.getObject(patternIdx));
+              patternIdx++;
             }
-            valueColumnBuilder.writeObject(isrle ? value : valueColumn.getObject(patternIdx));
-            patternIdx++;
           }
 
           valueBuilder.writeRLEPattern(
@@ -521,6 +546,13 @@ public class ValuePageReader {
               nullidx += 1;
               if (nullidx < nullCount) {
                 nextNullIndex = nullIndexArray.get(nullidx);
+              }
+              continue;
+            }
+            if (i == nextDoNothingIndex) {
+              doNothingIdx++;
+              if (doNothingIdx < doNothingSkipCount) {
+                nextDoNothingIndex = doNothingArray.get(doNothingIdx);
               }
               continue;
             }
@@ -691,28 +723,60 @@ public class ValuePageReader {
             contructColumnBuilders(Collections.singletonList(dataType))[0];
         int nullCount = nullIndexArray.size();
         boolean isrle = valueColumn.getPositionCount() == 1;
-        Object value = null;
-        if (isrle) {
-          value = valueColumn.getObject(0);
-        }
-        // if(valueColumn.getPositionCount() == 1){
-        // }else{
         int nullidx = 0;
-        int nextNullIndex = nullIndexArray.get(nullidx);
-        int patternIdx = 0;
-        for (int i = 0; i < writePatternLength; i++) {
-          if (i == nextNullIndex) {
-            valueColumnBuilder.appendNull();
-            nullidx += 1;
-            if (nullidx < nullCount) {
-              nextNullIndex = nullIndexArray.get(nullidx);
+        int nextNullIndex = 0;
+        if (isrle) {
+          // LOGGER.info("[tyx] in with null rle ." + writePatternLength);
+          int curRun = 1;
+          int curNullAcc = 1;
+          int lastNullIndex = -1;
+          valueColumnBuilder.writeObject(valueColumn.getObject(0));
+          ColumnBuilder nullColumnBuilder =
+              contructColumnBuilders(Collections.singletonList(dataType))[0];
+          nullColumnBuilder.appendNull();
+          while (nullidx < nullCount) {
+            nextNullIndex = nullIndexArray.get(nullidx);
+            curRun = nextNullIndex - lastNullIndex - 1;
+            // LOGGER.info("[tyx] curRun = " + curRun + " null index = " + nextNullIndex);
+            if (curRun != 0) {
+              if (lastNullIndex != -1) {
+                // LOGGER.info("[tyx]  ------- write Nulls " + curNullAcc);
+                valueBuilder.writeRLEPattern(nullColumnBuilder.build(), curNullAcc);
+              }
+              // LOGGER.info("[tyx]  ------- write RLEs " + curRun);
+              valueBuilder.writeRLEPattern(valueColumnBuilder.build(), curRun);
+              curNullAcc = 1;
+            } else if (lastNullIndex != -1) {
+              curNullAcc += 1;
             }
-            continue;
+            nullidx += 1;
+            lastNullIndex = nextNullIndex;
           }
-          valueColumnBuilder.writeObject(isrle ? value : valueColumn.getObject(patternIdx));
-          patternIdx++;
+          // LOGGER.info("[tyx]  ------- write Nulls " + curNullAcc);
+          valueBuilder.writeRLEPattern(nullColumnBuilder.build(), curNullAcc);
+          // consume rest values.
+          curRun = writePatternLength - lastNullIndex - 1;
+          if (curRun != 0) {
+            // LOGGER.info("[tyx]  ------- write RLEs " + curRun);
+            valueBuilder.writeRLEPattern(valueColumnBuilder.build(), curRun);
+          }
+        } else {
+          nextNullIndex = nullIndexArray.get(nullidx);
+          int patternIdx = 0;
+          for (int i = 0; i < writePatternLength; i++) {
+            if (i == nextNullIndex) {
+              valueColumnBuilder.appendNull();
+              nullidx += 1;
+              if (nullidx < nullCount) {
+                nextNullIndex = nullIndexArray.get(nullidx);
+              }
+              continue;
+            }
+            valueColumnBuilder.writeObject(valueColumn.getObject(patternIdx));
+            patternIdx++;
+          }
+          valueBuilder.writeRLEPattern(valueColumnBuilder.build(), writePatternLength);
         }
-        valueBuilder.writeRLEPattern(valueColumnBuilder.build(), writePatternLength);
       }
       aPattern = valueDecoder.readRLEPattern(valueBuffer, dataType);
     }
